@@ -1,6 +1,8 @@
 # Copyright 2019 Shigeki Karita
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
+#DS branch
+
 """Transformer speech recognition model (pytorch)."""
 
 from argparse import Namespace
@@ -42,6 +44,10 @@ from espnet.nets.pytorch_backend.transformer.mask import target_mask
 from espnet.nets.pytorch_backend.transformer.plot import PlotAttentionReport
 from espnet.nets.scorers.ctc import CTCPrefixScorer
 from espnet.utils.fill_missing_args import fill_missing_args
+
+from espnet.nets.pytorch_backend.nets_utils import to_device
+from espnet.nets.pytorch_backend.nets_utils import to_torch_tensor
+from espnet.nets.pytorch_backend.nets_utils import pad_list
 
 
 class E2E(ASRInterface, torch.nn.Module):
@@ -418,9 +424,30 @@ class E2E(ASRInterface, torch.nn.Module):
         :rtype: torch.Tensor
         """
         self.eval()
-        x = torch.as_tensor(x).unsqueeze(0)
-        enc_output, _ = self.encoder(x, None)
-        return enc_output.squeeze(0)
+        print(x)
+        x = torch.as_tensor(x)
+        print('\nX')
+        print(x)
+        print(x.size())
+        #x = torch.as_tensor(x).unsqueeze(0)
+        #print('\nX unsqueezed')
+        #print(x)
+        #print(x.size())
+        enc_outputs = []
+        for feat_seq in x:
+            print(feat_seq, feat_seq.size())
+            print(feat_seq.unsqueeze(0), feat_seq.unsqueeze(0).size())
+            enc_output, _ = self.encoder(feat_seq.unsqueeze(0), None)
+            enc_outputs.append(enc_output.squeeze(0))
+        #enc_output, _ = self.encoder(x, None)
+        output = torch.stack(enc_outputs)
+        print('OUTPUT', output.size())
+        #print('\nX ENCODED')
+        #print(enc_output, enc_output.size())
+        #print('\nX ENCODED squeezed')
+        #print(enc_output.squeeze(0), enc_output.squeeze(0).size())
+        #return enc_output.squeeze(0)
+        return output
 
     def recognize(self, x, recog_args, char_list=None, rnnlm=None, use_jit=False):
         """Recognize input speech.
@@ -641,6 +668,119 @@ class E2E(ASRInterface, torch.nn.Module):
             + str(nbest_hyps[0]["score"] / len(nbest_hyps[0]["yseq"]))
         )
         return nbest_hyps
+
+    def recognize_batch(self, xs, recog_args, char_list, beam_search, rnnlm=None):
+        """E2E batch beam search.
+        
+        :param list xs: list of input acoustic feature arrays [(T_1, D), (T_2, D), ...]
+        :param Namespace recog_args: argument Namespace containing options
+        :param list char_list: list of characters
+        :param torch.nn.Module rrnlm: language model module
+        :return: N-best decoding results
+        :rtype: list
+        """
+        
+        if recog_args.ngpu == 1:
+            device = "cuda"
+        else:
+            device = "cpu"
+
+        prev = self.training
+        self.eval()
+        ilens = numpy.fromiter((xx.shape[0] for xx in xs), dtype=numpy.int64)
+        print(len(ilens), ilens.shape)
+        
+        # subsample frame
+        xs = [xx[:: self.subsample[0], :] for xx in xs]
+        xs = [to_device(self, to_torch_tensor(xx).float()) for xx in xs]
+        print('\nXS\n')
+        #print(len(xs), len(xs[1]))
+        xs_pad = pad_list(xs, 0.0)
+        print('\nXS_PAD\n')
+        #print(len(xs_pad), len(xs_pad[1]))
+
+        # 0. Frontend
+        #if self.frontend is not None:
+        #    enhanced, hlens, mask = self.frontend(xs_pad, ilens)
+        #    hs_pad, hlens = self.feature_transform(enhanced, hlens)
+        #else:
+        #    hs_pad, hlens = xs_pad, ilens
+        hs_pad, hlens = xs_pad, ilens
+        print('HS_PAD')
+        print(hs_pad)
+        print('HLENS')
+        print(hlens)
+
+        # 1. Encoder
+        #hs_pad, hlens, _ = self.enc(hs_pad, hlens)
+        dtype = getattr(torch, recog_args.dtype)
+        #dtype = torch.float32
+        hs_pad = self.encode(torch.as_tensor(hs_pad).to(device=device,dtype=dtype))
+        print('ENNNNNNC')
+        print(hs_pad, hs_pad.size())
+
+        batch_nbest_hyps = []
+        #for feat in xs_pad:
+        #    enc = self.encode(torch.as_tensor(feat).to(device=device,dtype=dtype))
+        #    nbest_hyps = beam_search(
+        #        x=enc, maxlenratio=recog_args.maxlenratio, minlenratio=recog_args.minlenratio
+        #    )
+        #    nbest_hyps = [
+        #        h.asdict() for h in nbest_hyps[:min(len(nbest_hyps), recog_args.nbest)]
+        #    ]
+        #    batch_nbest_hyps.append(nbest_hyps)
+        # calculate log P(z_t|X) for CTC scores
+        if recog_args.ctc_weight > 0.0:
+            lpz = self.ctc.log_softmax(hs_pad)
+            normalize_score = False
+        else:
+            lpz = None
+            normalize_score = True
+
+        #lpz = None
+        #normalize_score = True
+
+        hlens = torch.tensor(list(map(int,hlens))) # make sure hlens is tensor
+        y = self.recognize_beam_batch(
+            hs_pad,
+            hlens,
+            lpz,
+            recog_args,
+            char_list,
+            rnnlm,
+            normalize_score=normalize_score,
+        )
+
+        if prev:
+           self.train()
+        return y
+
+
+        #return batch_nbest_hyps
+
+        ## calculate log P(z_t|X) for CTC scores
+        #if recog_args.ctc_weight > 0.0:
+        #    lpz = self.ctc.log_softmax(hs_pad)
+        #    normalize_score = False
+        #else:
+        #    lpz = None
+        #    normalize_score = True
+
+        ## 2. Decoder
+        #hlens = torch.tensor(list(map(int,hlens))) # make sure hlens is tensor
+        #y = self.dec.recognize_beam_batch(
+        #    hs_pad,
+        #    hlens,
+        #    lpz,
+        #    recog_args,
+        #    char_list,
+        #    rnnlm,
+        #    normalize_score=normalize_score,
+        #)
+
+        #if prev:
+        #   self.train()
+        #return y
 
     def recognize_maskctc(self, x, recog_args, char_list=None):
         """Non-autoregressive decoding using Mask CTC.
