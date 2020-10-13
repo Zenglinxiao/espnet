@@ -32,7 +32,8 @@ def recog_v2(args):
     """
     logging.warning("experimental API for custom LMs is selected by --api v2")
     if args.batchsize > 1:
-        raise NotImplementedError("multi-utt batch decoding is not implemented")
+        #raise NotImplementedError("multi-utt batch decoding is not implemented")
+        print("Mutli-utt batch decoding turned on")
     if args.streaming_mode is not None:
         raise NotImplementedError("streaming mode is not implemented")
     if args.word_rnnlm:
