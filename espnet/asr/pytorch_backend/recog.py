@@ -33,7 +33,7 @@ def recog_v2(args):
     logging.warning("experimental API for custom LMs is selected by --api v2")
     if args.batchsize > 1:
         #raise NotImplementedError("multi-utt batch decoding is not implemented")
-        print("Mutli-utt batch decoding turned on")
+        print("Multi-utt batch decoding turned on")
     if args.streaming_mode is not None:
         raise NotImplementedError("streaming mode is not implemented")
     if args.word_rnnlm:
@@ -132,6 +132,8 @@ def recog_v2(args):
         for idx, name in enumerate(js.keys(), 1):
             logging.info("(%d/%d) decoding " + name, idx, len(js.keys()))
             batch = [(name, js[name])]
+            print('\nBATCH')
+            print(batch)
             feat = load_inputs_and_targets(batch)[0][0]
             enc = model.encode(torch.as_tensor(feat).to(device=device, dtype=dtype))
             nbest_hyps = beam_search(
