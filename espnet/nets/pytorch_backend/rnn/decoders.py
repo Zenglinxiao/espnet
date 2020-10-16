@@ -650,6 +650,8 @@ class Decoder(torch.nn.Module, ScorerInterface):
         if self.num_encs > 1 and lpz is None:
             lpz = [lpz] * self.num_encs
 
+        print('ATT')
+        print(self.att, len(self.att))
         att_idx = min(strm_idx, len(self.att) - 1)
         for idx in range(self.num_encs):
             logging.info(
