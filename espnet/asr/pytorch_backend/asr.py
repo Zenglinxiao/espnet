@@ -971,16 +971,23 @@ def recog(args):
     )
 
     if args.batchsize == 0:
+        batch_feat = []
         with torch.no_grad():
             for idx, name in enumerate(js.keys(), 1):
                 logging.info("(%d/%d) decoding " + name, idx, len(js.keys()))
                 batch = [(name, js[name])]
+                print('\nBATCH')
+                print(batch)
                 feat = load_inputs_and_targets(batch)
+                print('\nFEAT')
+                print(feat, type(feat))
                 feat = (
                     feat[0][0]
                     if args.num_encs == 1
                     else [feat[idx][0] for idx in range(model.num_encs)]
                 )
+                print('\nFEAT2')
+                print(feat, type(feat), feat.shape)
                 if args.streaming_mode == "window" and args.num_encs == 1:
                     logging.info(
                         "Using streaming recognizer with window size %d frames",
@@ -1030,12 +1037,25 @@ def recog(args):
                         feat, args, train_args.char_list
                     )
                 else:
-                    nbest_hyps = model.recognize(
-                        feat, args, train_args.char_list, rnnlm
-                    )
-                new_js[name] = add_results_to_json(
-                    js[name], nbest_hyps, train_args.char_list
-                )
+                    batch_feat.append(feat)
+                    if len(batch_feat) == 2:
+                        batch_feat[0] = np.concatenate((batch_feat[0], np.zeros(shape=(107,83))))
+                        print(batch_feat[0].shape)
+                        feat = np.stack((batch_feat[0], batch_feat[1]), axis=0)
+                        print(feat.shape)
+                        nbest_hyps = model.recognize(
+                            feat, args, train_args.char_list, rnnlm
+                        )
+                        new_js[name] = add_results_to_json(
+                            js[name], nbest_hyps, train_args.char_list
+                        )
+                    elif len(batch_feat) == 3:
+                        nbest_hyps = model.recognize(
+                            feat, args, train_args.char_list, rnnlm
+                        )
+                        new_js[name] = add_results_to_json(
+                            js[name], nbest_hyps, train_args.char_list
+                        )
 
     else:
 
@@ -1054,6 +1074,8 @@ def recog(args):
             for names in grouper(args.batchsize, keys, None):
                 names = [name for name in names if name]
                 batch = [(name, js[name]) for name in names]
+                print('\nBATCH')
+                print(batch)
                 feats = (
                     load_inputs_and_targets(batch)[0]
                     if args.num_encs == 1
