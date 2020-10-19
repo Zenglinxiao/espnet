@@ -129,8 +129,8 @@ class Decoder(BatchScorerInterface, torch.nn.Module):
                     concat_after,
                 ),
             )
-            print('DECODERS', type(self.decoders[0])
-            print(self.decoders[0].feed_forward)
+            print('DECODERS', type(self.decoders))
+            print(self.decoders[0])
         elif selfattention_layer_type == "lightconv":
             logging.info("decoder self-attention layer type = lightweight convolution")
             self.decoders = repeat(
@@ -440,7 +440,7 @@ class Decoder(BatchScorerInterface, torch.nn.Module):
         if num_encs == 1:
             a_prev = [None]
             att_w_list, ctc_scorer, ctc_state = [None], [None], [None]
-            self.att[att_idx].reset()  # reset pre-computation of h
+            #self.att[att_idx].reset()  # reset pre-computation of h
         else:
             a_prev = [None] * (num_encs + 1)  # atts + han
             att_w_list = [None] * (num_encs + 1)  # atts + han
