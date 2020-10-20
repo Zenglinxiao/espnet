@@ -38,7 +38,8 @@ griffin_lim_iters=64  # the number of iterations of Griffin-Lim
 # Set this to somewhere where you want to put your data, or where
 # someone else has already put it. You'll want to change this
 # if you're not on the CLSP grid.
-datadir=/export/a15/vpanayotov/data
+#datadir=/export/a15/vpanayotov/data
+datadir=data_dwl
 
 # base url for downloads.
 data_url=www.openslr.org/resources/60
@@ -61,16 +62,20 @@ eval_set=test_clean
 if [ ${stage} -le -1 ] && [ ${stop_stage} -ge -1 ]; then
     echo "stage -1: Data Download"
     mkdir -p ${datadir}
-    for part in dev-clean test-clean train-clean-100 train-clean-360; do
+    #for part in dev-clean test-clean train-clean-100 train-clean-360; do
+    for part in dev-clean test-clean; do
         local/download_and_untar.sh ${datadir} ${data_url} ${part}
     done
 fi
+
+exit
 
 if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
     ### But you can utilize Kaldi recipes in most cases
     echo "stage 0: Data preparation"
-    for part in dev-clean test-clean train-clean-100 train-clean-360; do
+    #for part in dev-clean test-clean train-clean-100 train-clean-360; do
+    for part in dev-clean test-clean; do
         # use underscore-separated names in data directories.
         local/data_prep.sh ${datadir}/LibriTTS/${part} data/${part//-/_}
     done
