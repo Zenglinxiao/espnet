@@ -424,30 +424,10 @@ class E2E(ASRInterface, torch.nn.Module):
         :rtype: torch.Tensor
         """
         self.eval()
-        #print(x)
         x = torch.as_tensor(x)
-        print('\nX')
-        print(x)
-        print(x.size())
         #x = torch.as_tensor(x).unsqueeze(0)
-        #print('\nX unsqueezed')
-        #print(x)
-        #print(x.size())
-        #enc_outputs = []
-        #for feat_seq in x:
-        #    print(feat_seq, feat_seq.size())
-        #    print(feat_seq.unsqueeze(0), feat_seq.unsqueeze(0).size())
-        #    enc_output, _ = self.encoder(feat_seq.unsqueeze(0), None)
-        #    enc_outputs.append(enc_output.squeeze(0))
         enc_output, _ = self.encoder(x, None)
-        #output = torch.stack(enc_outputs)
-        #print('OUTPUT', output.size())
-        #print('\nX ENCODED')
-        #print(enc_output, enc_output.size())
-        #print('\nX ENCODED squeezed')
-        #print(enc_output.squeeze(0), enc_output.squeeze(0).size())
         return enc_output.squeeze(0)
-        #return output
 
     def recognize(self, x, recog_args, char_list=None, rnnlm=None, use_jit=False):
         """Recognize input speech.
@@ -459,8 +439,6 @@ class E2E(ASRInterface, torch.nn.Module):
         :return: N-best decoding results
         :rtype: list
         """
-        print('RECOGNIZE')
-        print(x, type(x), x.shape)
         enc_output = self.encode(x).unsqueeze(0)
         if self.mtlalpha == 1.0:
             recog_args.ctc_weight = 1.0
@@ -681,27 +659,15 @@ class E2E(ASRInterface, torch.nn.Module):
         :return: N-best decoding results
         :rtype: list
         """
-        
-        #if recog_args.ngpu == 1:
-        #    device = "cuda"
-        #else:
-        #    device = "cpu"
 
         prev = self.training
         self.eval()
         ilens = numpy.fromiter((xx.shape[0] for xx in xs), dtype=numpy.int64)
-        print('\nILENS')
-        print(len(ilens), ilens.shape)
-        print(ilens)
         
         # subsample frame
         xs = [xx[:: self.subsample[0], :] for xx in xs]
         xs = [to_device(self, to_torch_tensor(xx).float()) for xx in xs]
-        print('\nXS\n')
-        print(len(xs), len(xs[0]))
         xs_pad = pad_list(xs, 0.0)
-        print('\nXS_PAD\n')
-        print(len(xs_pad), len(xs_pad[0]))
 
         # 0. Frontend
         #if self.frontend is not None:
@@ -710,10 +676,6 @@ class E2E(ASRInterface, torch.nn.Module):
         #else:
         #    hs_pad, hlens = xs_pad, ilens
         hs_pad, hlens = xs_pad, ilens
-        print('HS_PAD')
-        print(hs_pad, hs_pad.size())
-        print('HLENS')
-        print(hlens)
 
         # 1. Encoder
         #hs_pad, hlens, _ = self.enc(hs_pad, hlens)
@@ -721,10 +683,7 @@ class E2E(ASRInterface, torch.nn.Module):
         #dtype = torch.float32
         hs_pad = self.encode(torch.as_tensor(hs_pad))
         #hs_pad = self.encode(torch.as_tensor(hs_pad).to(device=device,dtype=dtype))
-        print('ENNNNNNC')
-        print(hs_pad, hs_pad.size())
 
-        batch_nbest_hyps = []
         #for feat in xs_pad:
         #    enc = self.encode(torch.as_tensor(feat).to(device=device,dtype=dtype))
         #    nbest_hyps = beam_search(
@@ -759,33 +718,6 @@ class E2E(ASRInterface, torch.nn.Module):
         if prev:
            self.train()
         return y
-
-
-        #return batch_nbest_hyps
-
-        ## calculate log P(z_t|X) for CTC scores
-        #if recog_args.ctc_weight > 0.0:
-        #    lpz = self.ctc.log_softmax(hs_pad)
-        #    normalize_score = False
-        #else:
-        #    lpz = None
-        #    normalize_score = True
-
-        ## 2. Decoder
-        #hlens = torch.tensor(list(map(int,hlens))) # make sure hlens is tensor
-        #y = self.dec.recognize_beam_batch(
-        #    hs_pad,
-        #    hlens,
-        #    lpz,
-        #    recog_args,
-        #    char_list,
-        #    rnnlm,
-        #    normalize_score=normalize_score,
-        #)
-
-        #if prev:
-        #   self.train()
-        #return y
 
     def recognize_maskctc(self, x, recog_args, char_list=None):
         """Non-autoregressive decoding using Mask CTC.

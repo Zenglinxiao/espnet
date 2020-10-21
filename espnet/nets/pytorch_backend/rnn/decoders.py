@@ -650,8 +650,6 @@ class Decoder(torch.nn.Module, ScorerInterface):
         if self.num_encs > 1 and lpz is None:
             lpz = [lpz] * self.num_encs
 
-        print('ATT')
-        print(self.att, len(self.att))
         att_idx = min(strm_idx, len(self.att) - 1)
         for idx in range(self.num_encs):
             logging.info(
@@ -713,19 +711,7 @@ class Decoder(torch.nn.Module, ScorerInterface):
         if self.num_encs == 1:
             a_prev = [None]
             att_w_list, ctc_scorer, ctc_state = [None], [None], [None]
-            print('BEFORE RESET')
-            print(self.att)
-            print(att_idx)
-            print(self.att[att_idx])
-            print(self.att[att_idx].h_length)
-            print(self.att[att_idx].enc_h)
-            print(self.att[att_idx].pre_compute_enc_h)
-            print(self.att[att_idx].mask)
             self.att[att_idx].reset()  # reset pre-computation of h
-            print('RESET')
-            print(self.att)
-            print(att_idx)
-            print(self.att[att_idx])
         else:
             a_prev = [None] * (self.num_encs + 1)  # atts + han
             att_w_list = [None] * (self.num_encs + 1)  # atts + han

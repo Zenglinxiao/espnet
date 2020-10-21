@@ -129,8 +129,6 @@ class Decoder(BatchScorerInterface, torch.nn.Module):
                     concat_after,
                 ),
             )
-            print('DECODERS', type(self.decoders))
-            print(self.decoders[0])
         elif selfattention_layer_type == "lightconv":
             logging.info("decoder self-attention layer type = lightweight convolution")
             self.decoders = repeat(
