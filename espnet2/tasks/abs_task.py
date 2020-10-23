@@ -146,7 +146,8 @@ scheduler_classes = dict(
 )
 if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
     scheduler_classes.update(
-        noamlr=NoamLR, warmuplr=WarmupLR,
+        noamlr=NoamLR,
+        warmuplr=WarmupLR,
     )
 if LooseVersion(torch.__version__) >= LooseVersion("1.3.0"):
     CosineAnnealingWarmRestarts = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
@@ -170,6 +171,7 @@ class IteratorOptions:
     batch_bins: int
     batch_type: str
     max_cache_size: float
+    max_cache_fd: int
     distributed: bool
     num_batches: Optional[int]
     num_iters_per_epoch: Optional[int]
@@ -266,7 +268,8 @@ class AbsTask(ABC):
         assert check_argument_types()
 
         class ArgumentDefaultsRawTextHelpFormatter(
-            argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter,
+            argparse.RawTextHelpFormatter,
+            argparse.ArgumentDefaultsHelpFormatter,
         ):
             pass
 
@@ -334,7 +337,10 @@ class AbsTask(ABC):
 
         group = parser.add_argument_group("distributed training related")
         group.add_argument(
-            "--dist_backend", default="nccl", type=str, help="distributed backend",
+            "--dist_backend",
+            default="nccl",
+            type=str,
+            help="distributed backend",
         )
         group.add_argument(
             "--dist_init_method",
@@ -487,6 +493,12 @@ class AbsTask(ABC):
             type=float,
             default=5.0,
             help="Gradient norm threshold to clip",
+        )
+        group.add_argument(
+            "--grad_clip_type",
+            type=float,
+            default=2.0,
+            help="The type of the used p-norm for gradient clip. Can be inf",
         )
         group.add_argument(
             "--grad_noise",
@@ -684,6 +696,14 @@ class AbsTask(ABC):
             help="The maximum cache size for data loader. e.g. 10MB, 20GB.",
         )
         group.add_argument(
+            "--max_cache_fd",
+            type=int,
+            default=32,
+            help="The maximum number of file descriptors to be kept "
+            "as opened for ark files. "
+            "This feature is only valid when data type is 'kaldi_ark'.",
+        )
+        group.add_argument(
             "--valid_max_cache_size",
             type=humanfriendly_parse_size_or_none,
             default=None,
@@ -729,7 +749,9 @@ class AbsTask(ABC):
 
     @classmethod
     def build_optimizers(
-        cls, args: argparse.Namespace, model: torch.nn.Module,
+        cls,
+        args: argparse.Namespace,
+        model: torch.nn.Module,
     ) -> List[torch.optim.Optimizer]:
         if cls.num_optimizers != 1:
             raise RuntimeError(
@@ -958,7 +980,9 @@ class AbsTask(ABC):
                 local_args.ngpu = 1
 
                 process = mp.Process(
-                    target=cls.main_worker, args=(local_args,), daemon=False,
+                    target=cls.main_worker,
+                    args=(local_args,),
+                    daemon=False,
                 )
                 process.start()
                 processes.append(process)
@@ -1062,6 +1086,7 @@ class AbsTask(ABC):
 
         # 6. Loads pre-trained model
         for p, k in zip(args.pretrain_path, args.pretrain_key):
+            logging.info(f"Loading pretrained params from {p} (key: {k})")
             load_pretrained_model(
                 model=model,
                 # Directly specify the model path e.g. exp/train/loss.best.pt
@@ -1150,18 +1175,26 @@ class AbsTask(ABC):
             # 8. Build iterator factories
             if args.multiple_iterator:
                 train_iter_factory = cls.build_multiple_iter_factory(
-                    args=args, distributed_option=distributed_option, mode="train",
+                    args=args,
+                    distributed_option=distributed_option,
+                    mode="train",
                 )
             else:
                 train_iter_factory = cls.build_iter_factory(
-                    args=args, distributed_option=distributed_option, mode="train",
+                    args=args,
+                    distributed_option=distributed_option,
+                    mode="train",
                 )
             valid_iter_factory = cls.build_iter_factory(
-                args=args, distributed_option=distributed_option, mode="valid",
+                args=args,
+                distributed_option=distributed_option,
+                mode="valid",
             )
             if args.num_att_plot != 0:
                 plot_attention_iter_factory = cls.build_iter_factory(
-                    args=args, distributed_option=distributed_option, mode="plot_att",
+                    args=args,
+                    distributed_option=distributed_option,
+                    mode="plot_att",
                 )
             else:
                 plot_attention_iter_factory = None
@@ -1211,7 +1244,10 @@ class AbsTask(ABC):
 
     @classmethod
     def build_iter_options(
-        cls, args: argparse.Namespace, distributed_option: DistributedOption, mode: str,
+        cls,
+        args: argparse.Namespace,
+        distributed_option: DistributedOption,
+        mode: str,
     ):
         if mode == "train":
             preprocess_fn = cls.build_preprocess_fn(args, train=True)
@@ -1222,6 +1258,7 @@ class AbsTask(ABC):
             batch_bins = args.batch_bins
             batch_type = args.batch_type
             max_cache_size = args.max_cache_size
+            max_cache_fd = args.max_cache_fd
             distributed = distributed_option.distributed
             num_batches = None
             num_iters_per_epoch = args.num_iters_per_epoch
@@ -1250,6 +1287,7 @@ class AbsTask(ABC):
                 max_cache_size = 0.05 * args.max_cache_size
             else:
                 max_cache_size = args.valid_max_cache_size
+            max_cache_fd = args.max_cache_fd
             distributed = distributed_option.distributed
             num_batches = None
             num_iters_per_epoch = None
@@ -1264,6 +1302,7 @@ class AbsTask(ABC):
             batch_size = 1
             batch_bins = 0
             num_batches = args.num_att_plot
+            max_cache_fd = args.max_cache_fd
             # num_att_plot should be a few sample ~ 3, so cache all data.
             max_cache_size = np.inf if args.max_cache_size != 0.0 else 0.0
             # always False because plot_attention performs on RANK0
@@ -1283,6 +1322,7 @@ class AbsTask(ABC):
             batch_bins=batch_bins,
             num_batches=num_batches,
             max_cache_size=max_cache_size,
+            max_cache_fd=max_cache_fd,
             distributed=distributed,
             num_iters_per_epoch=num_iters_per_epoch,
             train=train,
@@ -1330,15 +1370,21 @@ class AbsTask(ABC):
 
         if args.iterator_type == "sequence":
             return cls.build_sequence_iter_factory(
-                args=args, iter_options=iter_options, mode=mode,
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
             )
         elif args.iterator_type == "chunk":
             return cls.build_chunk_iter_factory(
-                args=args, iter_options=iter_options, mode=mode,
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
             )
         elif args.iterator_type == "task":
             return cls.build_task_iter_factory(
-                args=args, iter_options=iter_options, mode=mode,
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
             )
         else:
             raise RuntimeError(f"Not supported: iterator_type={args.iterator_type}")
@@ -1354,6 +1400,7 @@ class AbsTask(ABC):
             float_dtype=args.train_dtype,
             preprocess=iter_options.preprocess_fn,
             max_cache_size=iter_options.max_cache_size,
+            max_cache_fd=iter_options.max_cache_fd,
         )
         cls.check_task_requirements(
             dataset, args.allow_variable_data_keys, train=iter_options.train
@@ -1410,7 +1457,10 @@ class AbsTask(ABC):
 
     @classmethod
     def build_chunk_iter_factory(
-        cls, args: argparse.Namespace, iter_options: IteratorOptions, mode: str,
+        cls,
+        args: argparse.Namespace,
+        iter_options: IteratorOptions,
+        mode: str,
     ) -> AbsIterFactory:
         assert check_argument_types()
 
@@ -1419,6 +1469,7 @@ class AbsTask(ABC):
             float_dtype=args.train_dtype,
             preprocess=iter_options.preprocess_fn,
             max_cache_size=iter_options.max_cache_size,
+            max_cache_fd=iter_options.max_cache_fd,
         )
         cls.check_task_requirements(
             dataset, args.allow_variable_data_keys, train=iter_options.train
@@ -1479,7 +1530,10 @@ class AbsTask(ABC):
     # NOTE(kamo): Not abstract class
     @classmethod
     def build_task_iter_factory(
-        cls, args: argparse.Namespace, iter_options: IteratorOptions, mode: str,
+        cls,
+        args: argparse.Namespace,
+        iter_options: IteratorOptions,
+        mode: str,
     ) -> AbsIterFactory:
         """Build task specific iterator factory
 
@@ -1633,7 +1687,9 @@ class AbsTask(ABC):
             if key_file is None:
                 key_file = data_path_and_name_and_type[0][0]
             batch_sampler = UnsortedBatchSampler(
-                batch_size=batch_size, key_file=key_file, drop_last=False,
+                batch_size=batch_size,
+                key_file=key_file,
+                drop_last=False,
             )
             kwargs.update(batch_sampler=batch_sampler)
 
@@ -1642,7 +1698,10 @@ class AbsTask(ABC):
         )
 
         return DataLoader(
-            dataset=dataset, pin_memory=ngpu > 0, num_workers=num_workers, **kwargs,
+            dataset=dataset,
+            pin_memory=ngpu > 0,
+            num_workers=num_workers,
+            **kwargs,
         )
 
     # ~~~~~~~~~ The methods below are mainly used for inference ~~~~~~~~~
