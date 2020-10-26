@@ -61,7 +61,6 @@ decode_dir=${decode_dir}/${base}
 asr_model_dir=download/exp/asr_train_asr_transformer_e18_raw_bpe_sp
 lm_model_dir=download/exp/lm_train_lm_adam_bpe
 
-start=$(date +%s)
 
 if [ -d ${decode_dir}/${base} ]; then
     rm -r ${decode_dir}/${base}
@@ -99,6 +98,8 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     done
 fi
 
+start=$(date +%s)
+
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 3 ]; then
     echo "stage 2: Decoding"
 
@@ -120,8 +121,6 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 3 ]; then
 	  	--ngpu $ngpu \
 	  	--beam_size 5 \
 	  	--batch_size $batch_size \
-		  --lm_train_config ${lm_model_dir}/config.yaml \
-		  --lm_file ${lm_model_dir}/valid.acc.best.pth \
 	  	--num_workers $split_nj
 
     for f in token token_int text score; do
@@ -131,6 +130,8 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 3 ]; then
     done
 fi
 
+		  #--lm_train_config ${lm_model_dir}/config.yaml \
+		  #--lm_file ${lm_model_dir}/valid.acc.best.pth \
 
 end=$(date +%s)
 time_elapsed=`echo $end - $start | bc -l`

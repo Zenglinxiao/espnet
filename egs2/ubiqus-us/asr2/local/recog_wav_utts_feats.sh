@@ -4,6 +4,16 @@
 #           2019 RevComm Inc. (Takekatsu Hiramura)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
+min() {
+	local a b
+	a=$1
+	for b in "$@"; do
+		if [ "${b}" -le "${a}" ]; then
+			a="${b}"
+		fi
+	done
+	echo "${a}"
+}
 
 if [ ! -f path.sh ] || [ ! -f cmd.sh ]; then
     echo "Please change current directory to recipe directory e.g., egs/tedlium2/asr1"
@@ -72,26 +82,23 @@ if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
     mv ${decode_dir}/data_seg ${decode_dir}/data
 fi
 
+key_file=${decode_dir}/data/feats.scp
+split_nj=$(min "${nj}" "$(<${key_file} wc -l)")
+
 if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     echo "stage 1: Feature Generation"
 
-    steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj $nj --write_utt2num_frames true \
+    steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj $split_nj --write_utt2num_frames true \
         ${decode_dir}/data ${decode_dir}/log ${decode_dir}/fbank
 
 fi
-
-#end=$(date +%s)
-#time_elapsed=`echo $end - $start | bc -l`
-#echo "${time_elapsed} sec elapsed" > ${decode_dir}/time.txt
 
 start=$(date +%s)
 
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 3 ]; then
     echo "stage 2: Decoding"
-    echo $batch_size 
-    #key_file=${decode_dir}/data/feats.scp
     
-    ${decode_cmd} JOB=1:$nj ${decode_dir}/log/decode.JOB.log \
+    ${decode_cmd} JOB=1:$split_nj ${decode_dir}/log/decode.JOB.log \
 	  asr_inference.py \
 	  	--output_dir ${decode_dir}/output.JOB \
 	  	--data_path_and_name_and_type ${decode_dir}/data/feats.scp,speech,kaldi_ark \
@@ -101,10 +108,10 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 3 ]; then
 	  	--ngpu $ngpu \
 	  	--beam_size 5 \
 	  	--batch_size $batch_size \
-	  	--num_workers $nj
+	  	--num_workers $split_nj
 
     for f in token token_int text score; do
-        for i in $(seq $nj); do
+        for i in $(seq $split_nj); do
             cat ${decode_dir}/output.${i}/1best_recog/${f}
         done | LC_ALL=C sort -k1 > ${decode_dir}/${f}
     done
@@ -112,8 +119,6 @@ fi
 
 		#--lm_train_config ${lm_model_dir}/config.yaml \
 		#--lm_file ${lm_model_dir}/valid.acc.best.pth \
-		#--data_path_and_name_and_type ${decode_dir}/data/feats.scp,speech,kaldi_ark \
-
 
 end=$(date +%s)
 time_elapsed=`echo $end - $start | bc -l`
