@@ -14,6 +14,7 @@ from typeguard import check_argument_types
 from typeguard import check_return_type
 from typing import List
 
+from espnet.nets.real_batch_beam_search import RealBatchBeamSearch
 from espnet.nets.batch_beam_search import BatchBeamSearch
 from espnet.nets.beam_search import BeamSearch
 from espnet.nets.beam_search import Hypothesis
@@ -66,7 +67,7 @@ class Speech2Text:
         nbest: int = 1,
     ):
         assert check_argument_types()
-
+        assert nbest <= beam_size, "nbest should be smaller than beam_size."
         # 1. Build ASR model
         scorers = {}
         asr_model, asr_train_args = ASRTask.build_model_from_file(
@@ -122,6 +123,17 @@ class Speech2Text:
                     f"As non-batch scorers {non_batch} are found, "
                     f"fall back to non-batch implementation."
                 )
+        else:
+            non_batch = [
+                k
+                for k, v in beam_search.full_scorers.items()
+                if not isinstance(v, BatchScorerInterface)
+            ]
+            if len(non_batch) > 0:
+                logging.warning(
+                    f"Potential issue: non-batch scorers {non_batch} are found")
+            beam_search.__class__ = RealBatchBeamSearch
+            logging.info("RealBatchBeamSearch implementation is selected.")
         beam_search.to(device=device, dtype=getattr(torch, dtype)).eval()
         for scorer in scorers.values():
             if isinstance(scorer, torch.nn.Module):
@@ -160,14 +172,15 @@ class Speech2Text:
 
     @torch.no_grad()
     def __call__(
-        self, speech: Union[torch.Tensor, np.ndarray]
-    ) -> List[Tuple[Optional[str], List[str], List[int], Hypothesis]]:
+        self, speech: Union[torch.Tensor, np.ndarray],
+        speech_lengths: Union[None, torch.Tensor, np.ndarray] = None
+    ) -> List[List[Tuple[Optional[str], List[str], List[int], Hypothesis]]]:
         """Inference
 
         Args:
             data: Input speech data
         Returns:
-            text, token, token_int, hyp
+            List[List[(text, token, token_int, hyp)]]: (batch, n_best)
 
         """
         assert check_argument_types()
@@ -175,11 +188,19 @@ class Speech2Text:
         # Input as audio signal
         if isinstance(speech, np.ndarray):
             speech = torch.tensor(speech)
-
-        # data: (Nsamples,) -> (1, Nsamples)
-        speech = speech.unsqueeze(0).to(getattr(torch, self.dtype))
-        # lenghts: (1,)
-        lengths = speech.new_full([1], dtype=torch.long, fill_value=speech.size(1))
+        if speech_lengths is None:
+            assert len(speech.size()) == 2, "Wrong input shape."
+            # speech input removed Batch dimension, this intend to add it back!
+            # data: (Nsamples,) -> (1, Nsamples)
+            speech = speech.unsqueeze(0).to(getattr(torch, self.dtype))
+            # lenghts: (1,)
+            lengths = speech.new_full([1], dtype=torch.long, fill_value=speech.size(1))  # tensor([Nsamples])
+        else:
+            assert len(speech.size()) == 3, "Wrong input shape."
+            if isinstance(speech_lengths, np.ndarray):
+                speech_lengths = torch.tensor(speech_lengths)
+            speech = speech.to(getattr(torch, self.dtype))
+            lengths = speech_lengths.to(dtype=torch.long)
         batch = {"speech": speech, "speech_lengths": lengths}
 
         # a. To device
@@ -187,32 +208,44 @@ class Speech2Text:
 
         # b. Forward Encoder
         enc, _ = self.asr_model.encode(**batch)
-        assert len(enc) == 1, len(enc)
+        assert len(enc) == speech.size(0), len(enc)
 
         # c. Passed the encoder result and the beam search
-        nbest_hyps = self.beam_search(
-            x=enc[0], maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
-        )
-        nbest_hyps = nbest_hyps[: self.nbest]
+        if speech.size(0) == 1:
+            nbest_hyps = self.beam_search(
+                x=enc[0], maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
+            )
+            batch_nbest_hyps = [nbest_hyps[: self.nbest]]
+        else:
+            batch_nbest_hyps = self.beam_search(
+                x=enc, maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
+            )
+            batch_nbest_hyps = [
+                nbest_hyps[: self.nbest] for nbest_hyps in batch_nbest_hyps]
 
         results = []
-        for hyp in nbest_hyps:
-            assert isinstance(hyp, Hypothesis), type(hyp)
+        for nbest_hyps in batch_nbest_hyps:
+            assert len(nbest_hyps) == self.nbest, "No enough nbest."
+            nbest_results = []
+            for hyp in nbest_hyps:
+                assert isinstance(hyp, Hypothesis), type(hyp)
 
-            # remove sos/eos and get results
-            token_int = hyp.yseq[1:-1].tolist()
+                # remove sos/eos and get results
+                token_int = hyp.yseq[1:-1].tolist()
 
-            # remove blank symbol id, which is assumed to be 0
-            token_int = list(filter(lambda x: x != 0, token_int))
+                # remove blank symbol id, which is assumed to be 0
+                token_int = list(filter(lambda x: x != 0, token_int))
 
-            # Change integer-ids to tokens
-            token = self.converter.ids2tokens(token_int)
+                # Change integer-ids to tokens
+                token = self.converter.ids2tokens(token_int)
 
-            if self.tokenizer is not None:
-                text = self.tokenizer.tokens2text(token)
-            else:
-                text = None
-            results.append((text, token, token_int, hyp))
+                if self.tokenizer is not None:
+                    text = self.tokenizer.tokens2text(token)
+                else:
+                    text = None
+                nbest_results.append((text, token, token_int, hyp))
+            results.append(nbest_results)
+        assert len(results) == speech.size(0), "No enough results."
 
         assert check_return_type(results)
         return results
@@ -265,7 +298,7 @@ def inference(
 
     # 1. Set random-seed
     set_all_random_seed(seed)
-
+    import pdb; pdb.set_trace()
     # 2. Build speech2text
     speech2text = Speech2Text(
         asr_train_config=asr_train_config,
@@ -277,6 +310,7 @@ def inference(
         device=device,
         maxlenratio=maxlenratio,
         minlenratio=minlenratio,
+        batch_size=batch_size,
         dtype=dtype,
         beam_size=beam_size,
         ctc_weight=ctc_weight,
@@ -301,29 +335,35 @@ def inference(
     # 7 .Start for-loop
     # FIXME(kamo): The output format should be discussed about
     with DatadirWriter(output_dir) as writer:
-        for keys, batch in loader:
+        for keys, batch in loader:  # key: uid (list: B), batch : {'speech': (B,S,D), 'speech_length': (X, S)}
             assert isinstance(batch, dict), type(batch)
             assert all(isinstance(s, str) for s in keys), keys
             _bs = len(next(iter(batch.values())))
             assert len(keys) == _bs, f"{len(keys)} != {_bs}"
-            batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
+            assert _bs == batch_size, f"{_bs} != {batch_size}"
+            if _bs == 1:
+                # reduce (1, S, D) -> (S, D)
+                batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
 
-            # N-best list of (text, token, token_int, hyp_object)
+            else:
+                # TODO: why remove length?!
+                batch = {k: v for k, v in batch.items() if not k.endswith("_lengths")}
+
+            # N-best list of (text, token, token_int, hyp_object) for batch_size sentence
             results = speech2text(**batch)
 
-            # Only supporting batch_size==1
-            key = keys[0]
-            for n, (text, token, token_int, hyp) in zip(range(1, nbest + 1), results):
-                # Create a directory: outdir/{n}best_recog
-                ibest_writer = writer[f"{n}best_recog"]
+            for uid, result in zip(keys, results):
+                for n, (text, token, token_int, hyp) in enumerate(result, start=1):
+                    # Create a directory: outdir/{n}best_recog
+                    ibest_writer = writer[f"{n}best_recog"]
 
-                # Write the result to each file
-                ibest_writer["token"][key] = " ".join(token)
-                ibest_writer["token_int"][key] = " ".join(map(str, token_int))
-                ibest_writer["score"][key] = str(hyp.score)
+                    # Write the result to each file
+                    ibest_writer["token"][uid] = " ".join(token)
+                    ibest_writer["token_int"][uid] = " ".join(map(str, token_int))
+                    ibest_writer["score"][uid] = str(hyp.score)
 
-                if text is not None:
-                    ibest_writer["text"][key] = text
+                    if text is not None:
+                        ibest_writer["text"][uid] = text
 
 
 def get_parser():
