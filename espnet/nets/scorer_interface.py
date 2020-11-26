@@ -94,6 +94,7 @@ class BatchScorerInterface(ScorerInterface):
         Returns: initial state
 
         """
+        # FIXME when x is 3-D tensor: should work for transformer decoder, but others?
         return self.init_state(x)
 
     def batch_score(

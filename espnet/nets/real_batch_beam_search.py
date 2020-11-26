@@ -1,6 +1,6 @@
 import math
 import torch
-from typing import List, Tuple, Dict, IntNumber
+from typing import List, Tuple, Any, Dict
 import logging
 from .batch_beam_search import BatchHypothesis, BatchBeamSearch
 from .beam_search import BeamSearch, Hypothesis
@@ -25,7 +25,7 @@ class BatchBeamHypothesis(BatchHypothesis):
 
     @classmethod
     def from_batch_hyps(
-        cls, batch_hyps: BatchHypothesis, x: torch.Tensor, beam_size: IntNumber
+        cls, batch_hyps: BatchHypothesis, x: torch.Tensor, beam_size: int
     ) -> "BatchBeamHypothesis":
         """Build BatchBeamHypothesis from BatchHypothesis with ids.
 
@@ -95,7 +95,7 @@ class BatchBeamHypothesis(BatchHypothesis):
         _new_length = self.length.view(-1).index_select(0, index).view(-1, beam)
         # scores: Dict[str, Tensor(batch, beam) -> (batch*beam) -> (batch, beam)]
         _new_scores = {
-            k: v.view(-1).index_select(0, ids).view(bsz, beam)
+            k: v.view(-1).index_select(0, index).view(bsz, beam)
             for k, v in self.scores.items()
         }
         # states: Dict[str, List[List](batch, beam) -> (batch, beam)]
@@ -132,7 +132,7 @@ class BatchBeamHypothesis(BatchHypothesis):
         """Return index of finished path."""
         return self.yseq[:, :, -1].eq(eos_id)  # (batch, beam)
 
-    def get_hypothesis_at(self, path_id: IntNumber):
+    def get_hypothesis_at(self, path_id: int):
         """Return the path_id Hypothesis.
 
         Args:
@@ -188,8 +188,23 @@ class RealBatchBeamSearch(BatchBeamSearch):
             BatchBeamHypothesis: The initial hypothesis of the batch.
 
         """
-        # NOTE: this may not compatible for CTCPrefixScorer
+        # NOTE: this is compatible for CTCPrefixScorer
         # As they get different CTCPrefixScore/CTCPrefixScoreTH
+        # FIXME: CTCPrefixScorer need to initialize CTC module in the score
+        # therefore can only be called once for init_state,
+        # we need to switch this to one single batch_init_state & feed it with
+        # whole x (B, T, D), each step, select right path for ctc is needed
+        # but this is not supported in current CTC module!!!
+        # NOTE: the change is tricy for CTC, but for others like transformer decoder
+        # this seems easy, as batch_init_state return None just as init_state
+        # TODO candidate replace:
+        # ...
+        # init_states = dict()
+        # init_scores = dict()
+        # for k, d in self.scorers.items():
+        #     init_states[k] = d.batch_init_state(x)
+        #     init_scores[k] = [0.0 for _ in range(len(x))]
+        # ...
         batch_hyp = []
         for ex_x in x:
             # ex_x (T, D) of each example
@@ -233,30 +248,43 @@ class RealBatchBeamSearch(BatchBeamSearch):
         finalized = [[] for _ in range(bsz)]
         return running_hyps, finished, finalized
 
-    # def score_full(
-    #     self, hyp: BatchHypothesis, x: torch.Tensor
-    # ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
-    #     """Score new hypothesis by `self.full_scorers`.
+    def score_full(
+        self, hyp: BatchBeamHypothesis, x: torch.Tensor
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+        """Score new hypothesis by `self.full_scorers`.
 
-    #     Args:
-    #         hyp (Hypothesis): Hypothesis with prefix tokens to score
-    #         x (torch.Tensor): Corresponding input feature (B, T, D)
+        Args:
+            hyp (BatchBeamHypothesis): BatchBeamHypothesis with prefix tokens to score
+            x (torch.Tensor): Corresponding input feature (batch, beam, T, D)
 
-    #     Returns:
-    #         Tuple[Dict[str, torch.Tensor], Dict[str, Any]]: Tuple of
-    #             score dict of `hyp` that has string keys of `self.full_scorers`
-    #             and tensor score values of shape: `(self.n_vocab,)`,
-    #             and state dict that has string keys
-    #             and state values of `self.full_scorers`
+        Returns:
+            Tuple[Dict[str, torch.Tensor], Dict[str, Any]]: Tuple of
+                score dict of `hyp` that has string keys of `self.full_scorers`
+                and tensor score values of shape: `(batch*beam, self.n_vocab,)`,
+                and state dict that has string keys
+                and state values of `self.full_scorers`
 
-    #     """
-    #     scores = dict()
-    #     states = dict()
-    #     for k, d in self.full_scorers.items():
-    #         scores[k], states[k] = d.batch_score(hyp.yseq, hyp.states[k], x)
-    #     return scores, states
+        """
+        bsz, beam = hyp.length.size()
+        bsz_x, beam_x, T, D = x.size()
+        assert bsz == bsz_x, "mismatch batch size"
+        assert beam == beam_x and beam == self.beam_size, "mismatch beam size"
+        n_path = bsz * beam
+        # 1. flatten hyp from (batch, beam, *) -> (batch*beam, *)
+        yseq = hyp.yseq.view(n_path, -1)
+        currunt_states = {
+            k: [hyp_state for batch_state in v for hyp_state in batch_state]
+            for k, v in hyp.states.items()
+        }
+        flatten_x = x.view(n_path, T, D)
+        # 2. got scores/states in shape (batch*beam, *)
+        scores = dict()
+        states = dict()
+        for k, d in self.full_scorers.items():
+            scores[k], states[k] = d.batch_score(yseq, currunt_states[k], flatten_x)
+        return scores, states
 
-    # def score_partial(
+    # def score_partial(  FIXME
     #     self, hyp: BatchHypothesis, ids: torch.Tensor, x: torch.Tensor
     # ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     #     """Score new hypothesis by `self.full_scorers`.
@@ -321,6 +349,28 @@ class RealBatchBeamSearch(BatchBeamSearch):
         # new_token_ids = top_ids % self.n_vocab
         # return prev_hyp_ids, new_token_ids, prev_hyp_ids, new_token_ids
 
+    def pre_batch_beam(self, scores: torch.Tensor):
+        """Returns pre_beam part_ids."""
+        batch_size, beam_size, n_vocab = scores.size()
+        top_ids = torch.topk(scores.view(batch_size, -1), self.pre_beam_size, dim=-1)[1]
+        batch_beam_ids = top_ids // self.n_vocab  # (batch, pre_beam_size) top beam path
+        new_token_ids = top_ids % self.n_vocab  # (batch, pre_beam_size)
+        return batch_beam_ids, new_token_ids
+
+    def merge_batch_scores(
+        self,
+        prev_scores: Dict[str, float],
+        next_full_scores: Dict[str, torch.Tensor],
+        next_part_scores: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Merge scores of current step into running scores."""
+        new_scores = dict()
+        for k, v in next_full_scores.items():
+            new_scores[k] = prev_scores[k] + v
+        for k, v in next_part_scores.items():
+            new_scores[k] = prev_scores[k] + v
+        return new_scores
+
     def search(
         self, running_hyps: BatchBeamHypothesis, x: torch.Tensor
     ) -> BatchBeamHypothesis:
@@ -336,32 +386,47 @@ class RealBatchBeamSearch(BatchBeamSearch):
         """
         batch_size = running_hyps.x.size(0)
         n_path = len(running_hyps)
-        part_ids = None  # no pre-beam
+        # part_ids = None  # no pre-beam
+
         # NOTE 1. Calculating Score
         # batch scoring: (batch*beam, V)
         weighted_scores = torch.zeros(
             n_path, self.n_vocab, dtype=x.dtype, device=x.device
         )
         # (batch*beam, V)
-        scores, states = self.score_full(running_hyps, x)  # FIXME
+        scores, states = self.score_full(running_hyps, x)
         for k in self.full_scorers:
             weighted_scores += self.weights[k] * scores[k]
-        # partial scoring
+        # partial scoring:
         if self.do_pre_beam:
             pre_beam_scores = (
                 weighted_scores
                 if self.pre_beam_score_key == "full"
                 else scores[self.pre_beam_score_key]
             )
+            # NOTE: reshape to (batch_size, -1) -> topk as batch_beam
+            part_batch_beam_ids, part_new_token_ids = self.pre_batch_beam(
+                pre_beam_scores.view(batch_size, self.beam_size, self.n_vocab))
+            # batch_beam_id -> path_id
+            part_batch_beam_offset = torch.arange(
+                0, batch_size * self.beam_size, step=self.beam_size
+            ).to(part_batch_beam_ids)  # (batch)
+            # (batch, pre_beam_size) + (batch, 1)
+            part_hyp_ids = part_batch_beam_ids + part_batch_beam_offset.unsqueeze(1)
+            # DELETE THESE
             # part_ids: (B, pre_beam_size)
-            part_ids = torch.topk(pre_beam_scores, self.pre_beam_size, dim=-1)[1]
+            # part_ids = torch.topk(pre_beam_scores, self.pre_beam_size, dim=-1)[1]
             # NOTE: part_ids.view(batch_size, -1, self.pre_beam_size)
+        else:
+            part_hyp_ids, part_new_token_ids = None, None
         # NOTE(takaaki-hori): Unlike BeamSearch, we assume that score_partial returns
         # full-size score matrices, which has non-zero scores for part_ids and zeros
         # for others.
-        part_scores, part_states = self.score_partial(running_hyps, part_ids, x)  # FIXME
+        part_scores, part_states = self.score_partial(
+            running_hyps, part_hyp_ids, part_new_token_ids, x)  # FIXME
         for k in self.part_scorers:
             weighted_scores += self.weights[k] * part_scores[k]
+
         # add previous hyp scores
         weighted_scores += running_hyps.score.view(-1).unsqueeze(1)
 
@@ -409,13 +474,31 @@ class RealBatchBeamSearch(BatchBeamSearch):
         # (batch, beam), (batch, beam), (batch, beam)
         top_scores, batch_beam_ids, token_ids = self.batch_beam(
             weighted_scores.view(batch_size, -1, self.n_vocab),
-            part_ids
+            part_ids=None  # not use in definition
         )
         batch_beam_offset = torch.arange(
             0, batch_size * self.beam_size, step=self.beam_size).to(batch_beam_ids)  # (batch)
         hyp_ids = batch_beam_ids + batch_beam_offset.unsqueeze(1)  # (batch, beam) + (batch, 1)
+        # partial reuse full as in batch_beam_search.py: see its batch_beam method
+        part_hyp_ids, part_token_ids = hyp_ids, token_ids
 
         # NOTE 3. update running_hyps
+        # merge states
+        # reshape states from (batch*beam) -> (batch, beam, *)
+        # running_hyps.states = self.merge_states(
+        #     {
+        #         k: [v[batch_id * self.beam_size : (batch_id + 1) * self.beam_size]
+        #             for batch_id in range(batch_size)]
+        #         for k, v in states.items()
+        #     },
+        #     {
+        #         k: [v[batch_id * self.beam_size : (batch_id + 1) * self.beam_size]
+        #             for batch_id in range(batch_size)]
+        #         for k, v in part_states.items()
+        #     },
+        #     part_idx=None  # not use in definition
+        # )
+        # NOTE running_hyps.scores/states further updated by reorder
         # reorder by hyp_ids: choose beam selected path
         reordered_hyps = running_hyps.index_reorder(hyp_ids.view(-1))
         # append last prediction: (batch, beam, seq_len) + (batch, beam, 1)
@@ -424,8 +507,24 @@ class RealBatchBeamSearch(BatchBeamSearch):
         reordered_hyps.length += 1
         # update score as chosen by beam
         reordered_hyps.score = top_scores
-        # FIXME running_hyps.scores/states updated by reorder but need change
-        # if we need also partial to merge XX to reordered_hyp
+        # update scores: reorder by select hyp path -> TODO select by token_id -> merge
+        _reordered_token_scores = {
+            k: v.index_select(0, hyp_ids.view(-1)).view(
+                batch_size, self.beam_size, self.n_vocab)
+            for k, v in scores.items()
+        }  # TODO FIXME select by token_id -> (batch, beam)
+        _reordered_part_scores = {
+            k: v.index_select(0, part_hyp_ids.view(-1)).view(
+                batch_size, self.beam_size, self.n_vocab)
+            for k, v in part_scores.items()
+        }  # TODO FIXME select by part_token_id -> (batch, beam)
+        running_hyps.scores = self.merge_batch_scores(
+            prev_scores=running_hyps.scores,
+            next_full_scores=_reordered_token_scores,  # FIXME
+            next_part_scores=_reordered_part_scores  # FIXME
+        )
+        # TODO: select states: need to use scorer.select_state may need to fall back to for-loop
+        # FIXME select states may not easy to do in batch
         return reordered_hyps
 
     def forward(
@@ -471,7 +570,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
                 assert len(running_hyps) == 0, "all finish but running_hyps not empty."
                 logging.info(f"all batch ended")
                 break
-            # FIXME: not sure understand this end_detect logic
+            # FIXME: not sure understand this end_detect logic (relate to CTC)
             # if maxlenratio == 0.0 and end_detect([h.asdict() for h in finalized], i):
             #     logging.info(f"end detected at {i}")
             #     break
