@@ -166,6 +166,7 @@ class Speech2Text:
         self.converter = converter
         self.tokenizer = tokenizer
         self.beam_search = beam_search
+        self.batch_mode = (batch_size > 1)
         self.maxlenratio = maxlenratio
         self.minlenratio = minlenratio
         self.device = device
@@ -213,7 +214,8 @@ class Speech2Text:
         assert len(enc) == speech.size(0), len(enc)
 
         # c. Passed the encoder result and the beam search
-        if speech.size(0) == 1:
+        if not self.batch_mode:
+            assert speech.size(0) == 1, "wrong batch size"
             nbest_hyps = self.beam_search(
                 x=enc[0], maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
             )
@@ -342,8 +344,8 @@ def inference(
             assert all(isinstance(s, str) for s in keys), keys
             _bs = len(next(iter(batch.values())))
             assert len(keys) == _bs, f"{len(keys)} != {_bs}"
-            assert _bs == batch_size, f"{_bs} != {batch_size}"
-            if _bs == 1:
+            # assert _bs == batch_size, f"{_bs} != {batch_size}"
+            if batch_size == 1:
                 # reduce (1, S, D) -> (S, D)
                 batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
 
