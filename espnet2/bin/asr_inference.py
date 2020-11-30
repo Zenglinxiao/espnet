@@ -300,7 +300,7 @@ def inference(
 
     # 1. Set random-seed
     set_all_random_seed(seed)
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     # 2. Build speech2text
     speech2text = Speech2Text(
         asr_train_config=asr_train_config,
@@ -347,9 +347,9 @@ def inference(
                 # reduce (1, S, D) -> (S, D)
                 batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
 
-            else:
-                # TODO: why remove length?!
-                batch = {k: v for k, v in batch.items() if not k.endswith("_lengths")}
+            # else:
+            #     # TODO: why remove length?!
+            #     batch = {k: v for k, v in batch.items() if not k.endswith("_lengths")}
 
             # N-best list of (text, token, token_int, hyp_object) for batch_size sentence
             results = speech2text(**batch)

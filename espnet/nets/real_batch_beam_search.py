@@ -1,14 +1,14 @@
 import math
 import torch
-from typing import List, Tuple, Any, Dict, Optional
+from typing import List, Tuple, Any, Dict, Optional, NamedTuple
 import logging
-from .batch_beam_search import BatchHypothesis, BatchBeamSearch
+from .batch_beam_search import BatchBeamSearch
 from .beam_search import BeamSearch, Hypothesis
 
 from espnet.nets.e2e_asr_common import end_detect
 
 
-class BatchBeamHypothesis(BatchHypothesis):
+class BatchBeamHypothesis(NamedTuple):
     """Batchfied/Vectorized hypothesis data type."""
 
     ids: torch.Tensor = torch.tensor([])  # (batch*beam,)
@@ -178,7 +178,7 @@ class BatchBeamHypothesis(BatchHypothesis):
         """Return a new instance with path view (batch*beam, *)."""
         bsz, beam, T, D = self.x.size()
         bsz_y, beam_y, seq_len = self.yseq.size()
-        assert bsz == bsz_y and beam == bsz_y, "Error: size mismatch!"
+        assert bsz == bsz_y and beam == beam_y, "Error: size mismatch!"
         # _new_scores = {  # scores: Dict[str, Tensor(batch, beam)
         #     k: v.view(-1) for k, v in self.scores.items()
         # }
@@ -311,8 +311,8 @@ class RealBatchBeamSearch(BatchBeamSearch):
             ids=torch.arange(bsz).to(x.device).long(),  # (bsz*beam)
             x=x.unsqueeze(1),  # (bsz, T, D) -> (bsz, beam, T, D)
             yseq=batch_hyp.yseq.unsqueeze(1),  # (batch, S) -> # (batch, beam, S)
-            score=batch_hyp.score.unsqueeze(1),  # (batch,) -> # (batch, beam)
-            length=batch_hyp.length.unsqueeze(1),  # (batch,) -> # (batch, beam)
+            score=batch_hyp.score.unsqueeze(1).to(x.device),  # (batch,) -> # (batch, beam)
+            length=batch_hyp.length.unsqueeze(1).to(x.device),  # (batch,) -> # (batch, beam)
             scores=batch_hyp.scores,  # (bsz*beam,)
             states=batch_hyp.states,  # (bsz*beam,)
         )
@@ -361,7 +361,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
         bsz, beam = hyp.length.size()
         bsz_x, beam_x, T, D = x.size()
         assert bsz == bsz_x, "mismatch batch size"
-        assert beam == beam_x and beam == self.beam_size, "mismatch beam size"
+        assert beam == beam_x, "mismatch beam size"
         n_path = bsz * beam
         # 1. flatten hyp from (batch, beam, *) -> (batch*beam, *)
         yseq = hyp.yseq.view(n_path, -1)
@@ -632,7 +632,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
         # (batch, self.beam_size), (batch, self.beam_size), (batch, self.beam_size)
         top_scores, batch_beam_ids, token_ids = self.batch_beam(
             weighted_scores.view(batch_size, -1, self.n_vocab),
-            part_ids=None  # not use in definition
+            ids=None  # not use in definition
         )
         batch_beam_offset = torch.arange(
             0, batch_size * beam, step=beam).to(batch_beam_ids)  # (batch)
@@ -799,7 +799,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
         # (this will be a problem, number of hyps < beam)
         # path_newly_finished = running_hyps.is_finished(eos=self.eos)  # (batch, beam)
         path_newly_finished_mask = (
-            running_hyps.yseq[:, :, -1].eq(self.eos_id)
+            running_hyps.yseq[:, :, -1].eq(self.eos)
             & running_hyps.score.ne(-math.inf)
         )
 
@@ -808,7 +808,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
         if path_newly_finished_mask.any():
             # 1. add newly finished path to ended_hyps
             # any path newly finished
-            path_newly_finished_id = torch.mask_select(
+            path_newly_finished_id = torch.masked_select(
                 torch.arange(0, n_hyps).to(running_hyps.ids),
                 mask=path_newly_finished_mask.view(-1)
             )
@@ -827,11 +827,11 @@ class RealBatchBeamSearch(BatchBeamSearch):
                 ended_hyps[sent_id].append(finished_hyp)
                 # sentence finish when it has beam_size finished hypothesis
                 if len(ended_hyps[sent_id]) >= self.beam_size:
-                    finished_batch_id.update(path_id // self.beam_size)
+                    finished_batch_id.add(path_id // self.beam_size)
                     finished[sent_id] = True  # set finish flag to True
             # NOTE mask score of finished path to -inf to avoid be selected
             # again by beam
-            running_hyps = running_hyps.score.masked_fill(
+            running_hyps.score.masked_fill_(
                 mask=path_newly_finished_mask, value=-math.inf)
             if len(finished_batch_id) > 0:
                 # 2. remove finished batch from runing hypothesis
