@@ -1,6 +1,6 @@
 import math
 import torch
-from typing import List, Tuple, Any, Dict
+from typing import List, Tuple, Any, Dict, Optional
 import logging
 from .batch_beam_search import BatchHypothesis, BatchBeamSearch
 from .beam_search import BeamSearch, Hypothesis
@@ -16,103 +16,103 @@ class BatchBeamHypothesis(BatchHypothesis):
     yseq: torch.Tensor = torch.tensor([])  # (batch, beam, maxlen)
     score: torch.Tensor = torch.tensor([])  # (batch, beam)
     length: torch.Tensor = torch.tensor([])  # (batch, beam)
-    scores: Dict[str, torch.Tensor] = dict()  # values: (batch, beam)
-    states: Dict[str, List[List]] = dict()
+    scores: Dict[str, torch.Tensor] = dict()  # values: (batch*beam)
+    states: Dict[str, List[List]] = dict()  # values: (batch*beam)
 
     def __len__(self) -> int:
         """Return number of hypothesis."""
         return self.length.numel()
 
-    @classmethod
-    def from_batch_hyps(
-        cls, batch_hyps: BatchHypothesis, x: torch.Tensor, beam_size: int
-    ) -> "BatchBeamHypothesis":
-        """Build BatchBeamHypothesis from BatchHypothesis with ids.
+    # @classmethod
+    # def from_batch_hyps(
+    #     cls, batch_hyps: BatchHypothesis, x: torch.Tensor, beam_size: int
+    # ) -> "BatchBeamHypothesis":
+    #     """Build BatchBeamHypothesis from BatchHypothesis with ids.
 
-        Repeat batch_hyps with beam_size times and enrich it with original
-        batch index and encoded feature x as additional information to form
-        a BatchBeamHypothesis instance.
+    #     Repeat batch_hyps with beam_size times and enrich it with original
+    #     batch index and encoded feature x as additional information to form
+    #     a BatchBeamHypothesis instance.
 
-        Args:
-            batch_hyps (BatchHypothesis): (batch, *)
-            x (Tensor): (batch, T, D)
-            beam_size (int)
+    #     Args:
+    #         batch_hyps (BatchHypothesis): (batch, *)
+    #         x (Tensor): (batch, T, D)
+    #         beam_size (int)
 
-        Returns:
-            BatchBeamHypothesis
-                .ids: (batch * beam, *)
-                .x: (batch, beam, T, D)
-                .yseq: (batch, beam, seq_len)
-                .score, .length: (batch, beam)
-                .scores: Dict[str, Tensor(batch, beam)]
-                .states: Dict[str, List[List](batch, beam)]
+    #     Returns:
+    #         BatchBeamHypothesis
+    #             .ids: (batch * beam, *)
+    #             .x: (batch, beam, T, D)
+    #             .yseq: (batch, beam, seq_len)
+    #             .score, .length: (batch, beam)
+    #             .scores: Dict[str, Tensor(batch, beam)]
+    #             .states: Dict[str, List[List](batch, beam)]
 
-        """
-        bsz, T, D = x.size()
-        assert len(batch_hyps) == bsz, "batch_hyps mismatch x!"
-        ids = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)\
-                   .to(x.device).long()  # (bsz*beam_size)
-        running_x = x.index_select(0, ids).view(bsz, beam_size, T, D)
-        # yseq: (batch, seq_len) -> (batch, beam, seq_len)
-        yseq = batch_hyps.yseq.index_select(0, ids).view(bsz, beam_size, -1)
-        # score, length: (batch) -> (batch, beam)
-        score = batch_hyps.score.index_select(0, ids).view(bsz, beam_size)
-        length = batch_hyps.length.index_select(0, ids).view(bsz, beam_size)
-        # scores: Dict[str, Tensor(batch)] -> Dict[str, Tensor(batch, beam)]
-        scores = {
-            k: v.index_select(0, ids).view(bsz, beam_size)
-            for k, v in batch_hyps.scores.items()
-        }
-        # states: Dict[str, List[Tensor](batch)] -> Dict[str, List[List](batch, beam)]
-        states = {
-            k: [[hyp_state for _ in range(beam_size)] for hyp_state in v]
-            for k, v in batch_hyps.states.items()
-        }
-        return cls(
-            ids=ids,
-            x=running_x,
-            yseq=yseq,
-            score=score,
-            length=length,
-            scores=scores,
-            states=states
-        )
+    #     """
+    #     bsz, T, D = x.size()
+    #     assert len(batch_hyps) == bsz, "batch_hyps mismatch x!"
+    #     ids = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)\
+    #                .to(x.device).long()  # (bsz*beam_size)
+    #     running_x = x.index_select(0, ids).view(bsz, beam_size, T, D)
+    #     # yseq: (batch, seq_len) -> (batch, beam, seq_len)
+    #     yseq = batch_hyps.yseq.index_select(0, ids).view(bsz, beam_size, -1)
+    #     # score, length: (batch) -> (batch, beam)
+    #     score = batch_hyps.score.index_select(0, ids).view(bsz, beam_size)
+    #     length = batch_hyps.length.index_select(0, ids).view(bsz, beam_size)
+    #     # scores: Dict[str, Tensor(batch)] -> Dict[str, Tensor(batch, beam)]
+    #     scores = {
+    #         k: v.index_select(0, ids).view(bsz, beam_size)
+    #         for k, v in batch_hyps.scores.items()
+    #     }
+    #     # states: Dict[str, List[Tensor](batch)] -> Dict[str, List[List](batch, beam)]
+    #     states = {
+    #         k: [[hyp_state for _ in range(beam_size)] for hyp_state in v]
+    #         for k, v in batch_hyps.states.items()
+    #     }
+    #     return cls(
+    #         ids=ids,
+    #         x=running_x,
+    #         yseq=yseq,
+    #         score=score,
+    #         length=length,
+    #         scores=scores,
+    #         states=states
+    #     )
 
-    def index_reorder(self, index: torch.Tensor) -> "BatchBeamHypothesis":
-        """Select hypothese path indicated by 1-D tensor index."""
-        assert len(index.size()) == 1, "index should be 1-D tensor."
-        assert index.size().item() == len(self), "number of path not match."
-        _new_ids = self.ids.index_select(0, index)  # (bsz*beam)
-        bsz, beam, T, D = self.x.size()
-        # (batch, beam, T, D)  -> (batch*beam, T, D) -> (batch, beam, T, D)
-        _new_x = self.x.view(-1, T, D).index_select(0, index).view(-1, beam, T, D)
-        # yseq: (batch, beam, seq_len) -> (batch*beam, seq_len) -> (batch, beam, seq_len)
-        bsz_y, beam_y, seq_len = self.yseq.size()
-        assert bsz == bsz_y and beam == bsz_y, "Error: size mismatch!"
-        _new_yseq = self.yseq.view(-1, seq_len).index_select(0, index).view(-1, beam, seq_len)
-        # score, length: (batch, beam) -> (batch*beam) -> (batch, beam)
-        _new_score = self.score.view(-1).index_select(0, index).view(-1, beam)
-        _new_length = self.length.view(-1).index_select(0, index).view(-1, beam)
-        # scores: Dict[str, Tensor(batch, beam) -> (batch*beam) -> (batch, beam)]
-        _new_scores = {
-            k: v.view(-1).index_select(0, index).view(bsz, beam)
-            for k, v in self.scores.items()
-        }
-        # states: Dict[str, List[List](batch, beam) -> (batch, beam)]
-        _new_states = {
-            k: [[v[path_id // beam][path_id % beam] for path_id in batch_ids]
-                for batch_ids in index]
-            for k, v in self.states.items()
-        }
-        return BatchBeamHypothesis(
-            ids=_new_ids,
-            x=_new_x,
-            yseq=_new_yseq,
-            score=_new_score,
-            length=_new_length,
-            scores=_new_scores,
-            states=_new_states
-        )
+    # def index_reorder(self, index: torch.Tensor) -> "BatchBeamHypothesis":
+    #     """Select hypothese path indicated by 1-D tensor index."""
+    #     assert len(index.size()) == 1, "index should be 1-D tensor."
+    #     # assert index.size().item() == len(self), "number of path not match."
+    #     _new_ids = self.ids.index_select(0, index)  # (bsz*beam)
+    #     bsz, beam, T, D = self.x.size()
+    #     # (batch, beam, T, D)  -> (batch*beam, T, D) -> (batch, beam, T, D)
+    #     _new_x = self.x.view(-1, T, D).index_select(0, index).view(-1, beam, T, D)
+    #     # yseq: (batch, beam, seq_len) -> (batch*beam, seq_len) -> (batch, beam, seq_len)
+    #     bsz_y, beam_y, seq_len = self.yseq.size()
+    #     assert bsz == bsz_y and beam == bsz_y, "Error: size mismatch!"
+    #     _new_yseq = self.yseq.view(-1, seq_len).index_select(0, index).view(-1, beam, seq_len)
+    #     # score, length: (batch, beam) -> (batch*beam) -> (batch, beam)
+    #     _new_score = self.score.view(-1).index_select(0, index).view(-1, beam)
+    #     _new_length = self.length.view(-1).index_select(0, index).view(-1, beam)
+    #     # scores: Dict[str, Tensor(batch, beam) -> (batch*beam) -> (batch, beam)]
+    #     _new_scores = {
+    #         k: v.view(-1).index_select(0, index).view(bsz, beam)
+    #         for k, v in self.scores.items()
+    #     }
+    #     # states: Dict[str, List[List](batch, beam) -> (batch, beam)]
+    #     _new_states = {
+    #         k: [[v[path_id // beam][path_id % beam] for path_id in batch_ids]
+    #             for batch_ids in index]
+    #         for k, v in self.states.items()
+    #     }
+    #     return BatchBeamHypothesis(
+    #         ids=_new_ids,
+    #         x=_new_x,
+    #         yseq=_new_yseq,
+    #         score=_new_score,
+    #         length=_new_length,
+    #         scores=_new_scores,
+    #         states=_new_states
+    #     )
 
     # def append_tokens(self, token_ids: torch.Tensor) -> None:
     #     """Append token_ids as new predicted token.
@@ -128,55 +128,138 @@ class BatchBeamHypothesis(BatchHypothesis):
     #     self.yseq = torch.cat((self.yseq, token_ids.unsqueeze(-1)), dim=-1)
     #     self.length += 1
 
-    def is_finished(self, eos_id):
-        """Return index of finished path."""
-        return self.yseq[:, :, -1].eq(eos_id)  # (batch, beam)
+    # def is_finished(self, eos_id):
+    #     """Return index of finished path."""
+    #     return self.yseq[:, :, -1].eq(eos_id)  # (batch, beam)
 
-    def get_hypothesis_at(self, path_id: int):
-        """Return the path_id Hypothesis.
+    # def get_hypothesis_at(self, path_id: int):
+    #     """Return the path_id Hypothesis.
 
-        Args:
-            path_id (int): hypothesis path index, ranging in [0, batch*beam)
-        """
-        bsz, beam = self.length.size()
-        batch_id = path_id // beam
-        beam_id = path_id % beam
-        return Hypothesis(
-            yseq=self.yseq[batch_id][beam_id],
-            score=self.score[batch_id][beam_id],
-            scores={k: v[batch_id][beam_id] for k, v in self.scores.items()},
-            states={k: v[batch_id][beam_id] for k, v in self.states.items()}
+    #     Args:
+    #         path_id (int): hypothesis path index, ranging in [0, batch*beam)
+    #     """
+    #     bsz, beam = self.length.size()
+    #     batch_id = path_id // beam
+    #     beam_id = path_id % beam
+    #     return Hypothesis(
+    #         yseq=self.yseq[batch_id][beam_id],
+    #         score=self.score[batch_id][beam_id],
+    #         scores={k: v[batch_id][beam_id] for k, v in self.scores.items()},
+    #         states={k: v[batch_id][beam_id] for k, v in self.states.items()}
+    #     )
+
+    # def get_alive_batch(self, alive_batch_id: List[int]):
+    #     """Choose the subset of hypothesis that will continue.
+
+    #     Args:
+    #         alive_batch_id (List[int]): (n_alived_sent,)
+
+    #     """
+    #     bsz, beam = self.length.size()
+    #     _new_scores = {
+    #         k: v[alive_batch_id]
+    #         for k, v in self.scores.items()
+    #     }
+    #     _new_states = {  # FIXME
+    #         k: [v[batch_id] for batch_id in alive_batch_id]
+    #         for k, v in self.states.items()
+    #     }
+    #     return BatchBeamHypothesis(
+    #         ids=self.ids.view(bsz, beam)[alive_batch_id].view(-1),
+    #         x=self.x[alive_batch_id],
+    #         yseq=self.yseq[alive_batch_id],
+    #         score=self.score[alive_batch_id],
+    #         length=self.length[alive_batch_id],
+    #         scores=_new_scores,
+    #         states=_new_states
+    #     )
+
+    def _path_view(self):
+        """Return a new instance with path view (batch*beam, *)."""
+        bsz, beam, T, D = self.x.size()
+        bsz_y, beam_y, seq_len = self.yseq.size()
+        assert bsz == bsz_y and beam == bsz_y, "Error: size mismatch!"
+        # _new_scores = {  # scores: Dict[str, Tensor(batch, beam)
+        #     k: v.view(-1) for k, v in self.scores.items()
+        # }
+        # _new_states = {  # states: Dict[str, List[List](batch, beam)]
+        #     k: [path_state for batch_state in v for path_state in batch_state]
+        #     for k, v in self.states.items()
+        # }
+        return BatchBeamHypothesis(
+            ids=self.ids,
+            x=self.x.view(-1, T, D),
+            yseq=self.yseq.view(-1, seq_len),
+            score=self.score.view(-1),
+            length=self.length.view(-1),
+            scores=self.scores,
+            states=self.states  # _new_states
         )
 
-    def get_alive_batch(self, alive_batch_id: List[int]):
-        """Choose the subset of hypothesis that will continue.
-
-        Args:
-            alive_batch_id (List[int]): (n_alived_sent,)
-
-        """
-        bsz, beam = self.length.size()
-        _new_scores = {
-            k: v[alive_batch_id]
-            for k, v in self.scores.items()
-        }
-        _new_states = {
-            k: [v[batch_id] for batch_id in alive_batch_id]
-            for k, v in self.states.items()
-        }
+    def _standard_view(self, batch_size):
+        """Return to standard batch beam view."""
+        n_path, T, D = self.x.size()
+        n_path_y, seq_len = self.yseq.size()
+        assert n_path == n_path_y, "Error: size mismatch!"
+        beam = n_path // batch_size
+        assert n_path % batch_size == 0, "n_path should be dividable by batch_size"
+        # _new_scores = {  # scores: Dict[str, Tensor(batch, beam)
+        #     k: v.view(batch_size, beam) for k, v in self.scores.items()
+        # }
+        # _new_states = {  # states: Dict[str, List[List](batch, beam)]
+        #     k: [
+        #         [v[batch_id * batch_size + beam_id] for beam_id in range(beam)]
+        #         for batch_id in range(batch_size)
+        #     ]
+        #     for k, v in self.states.items()
+        # }
         return BatchBeamHypothesis(
-            ids=self.ids.view(bsz, beam)[alive_batch_id].view(-1),
-            x=self.x[alive_batch_id],
-            yseq=self.yseq[alive_batch_id],
-            score=self.score[alive_batch_id],
-            length=self.length[alive_batch_id],
-            scores=_new_scores,
-            states=_new_states
+            ids=self.ids,
+            x=self.x.view(batch_size, beam, T, D),
+            yseq=self.yseq.view(batch_size, beam, seq_len),
+            score=self.score.view(batch_size, beam),
+            length=self.length.view(batch_size, beam),
+            scores=self.scores,
+            states=self.states
         )
 
 
 class RealBatchBeamSearch(BatchBeamSearch):
     """Batch beam search to decode B example at once."""
+
+    def _select(self, hyps: BatchBeamHypothesis, path_id: int) -> Hypothesis:
+        """Return a single Hypothesis from hyps in path index i."""
+        path_hyps = hyps._path_view()
+        return Hypothesis(
+            yseq=path_hyps.yseq[path_id, : path_hyps.length[path_id]],
+            score=path_hyps.score[path_id],
+            scores={k: v[path_id] for k, v in path_hyps.scores.items()},
+            states={
+                k: self.scorers[k].select_state(v, path_id)
+                for k, v in path_hyps.states.items()
+            },
+        )
+
+    def _batch_select(self, hyps: BatchBeamHypothesis, batch_ids: List[int]) -> BatchBeamHypothesis:
+        batch_size, beam_size = hyps.length.size()
+        new_batch_size = len(batch_ids)
+        path_ids = [
+            i for rg in (
+                range(bid * beam_size, (bid + 1) * beam_size) for bid in batch_ids)
+            for i in rg]
+        assert len(path_ids) == new_batch_size * beam_size, "_batch_select error."
+        return BatchBeamHypothesis(
+            ids=hyps.ids[path_ids],
+            x=hyps.x[batch_ids],
+            yseq=hyps.yseq[batch_ids],
+            score=hyps.score[batch_ids],
+            length=hyps.length[batch_ids],
+            scores={k: v[path_ids] for k, v in hyps.scores.items()},
+            states={
+                k: [self.scorers[k].select_state(v, i) for i in path_ids]
+                for k, v in hyps.states.items()
+            },
+        )
 
     def init_hyp(self, x: torch.Tensor) -> BatchBeamHypothesis:
         """Get an initial hypothesis data.
@@ -211,7 +294,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
             init_states = dict()
             init_scores = dict()
             for k, d in self.scorers.items():
-                init_states[k] = d.init_state(ex_x)
+                init_states[k] = d.batch_init_state(ex_x)
                 init_scores[k] = 0.0
             # each example have one begin hypothesis
             batch_hyp.append(
@@ -223,9 +306,19 @@ class RealBatchBeamSearch(BatchBeamSearch):
                 )
             )
         batch_hyp = self.batchfy(batch_hyp)
-        return BatchBeamHypothesis.from_batch_hyps(
-            batch_hyp, x, self.beam_size
+        bsz, T, D = x.size()
+        return BatchBeamHypothesis(
+            ids=torch.arange(bsz).to(x.device).long(),  # (bsz*beam)
+            x=x.unsqueeze(1),  # (bsz, T, D) -> (bsz, beam, T, D)
+            yseq=batch_hyp.yseq.unsqueeze(1),  # (batch, S) -> # (batch, beam, S)
+            score=batch_hyp.score.unsqueeze(1),  # (batch,) -> # (batch, beam)
+            length=batch_hyp.length.unsqueeze(1),  # (batch,) -> # (batch, beam)
+            scores=batch_hyp.scores,  # (bsz*beam,)
+            states=batch_hyp.states,  # (bsz*beam,)
         )
+        # return BatchBeamHypothesis.from_batch_hyps(
+        #     batch_hyp, x, self.beam_size
+        # )
 
     def initialize(
         self, x: torch.Tensor
@@ -272,16 +365,16 @@ class RealBatchBeamSearch(BatchBeamSearch):
         n_path = bsz * beam
         # 1. flatten hyp from (batch, beam, *) -> (batch*beam, *)
         yseq = hyp.yseq.view(n_path, -1)
-        currunt_states = {
-            k: [hyp_state for batch_state in v for hyp_state in batch_state]
-            for k, v in hyp.states.items()
-        }
+        # currunt_states = {
+        #     k: [hyp_state for batch_state in v for hyp_state in batch_state]
+        #     for k, v in hyp.states.items()
+        # }
         flatten_x = x.view(n_path, T, D)
         # 2. got scores/states in shape (batch*beam, *)
         scores = dict()
         states = dict()
         for k, d in self.full_scorers.items():
-            scores[k], states[k] = d.batch_score(yseq, currunt_states[k], flatten_x)
+            scores[k], states[k] = d.batch_score(yseq, hyp.states[k], flatten_x)
         return scores, states
 
     # def score_partial(  FIXME
@@ -357,19 +450,84 @@ class RealBatchBeamSearch(BatchBeamSearch):
         new_token_ids = top_ids % self.n_vocab  # (batch, pre_beam_size)
         return batch_beam_ids, new_token_ids
 
-    def merge_batch_scores(
-        self,
-        prev_scores: Dict[str, float],
-        next_full_scores: Dict[str, torch.Tensor],
-        next_part_scores: Dict[str, torch.Tensor]
-    ) -> torch.Tensor:
-        """Merge scores of current step into running scores."""
-        new_scores = dict()
-        for k, v in next_full_scores.items():
-            new_scores[k] = prev_scores[k] + v
-        for k, v in next_part_scores.items():
-            new_scores[k] = prev_scores[k] + v
-        return new_scores
+    # def merge_batch_scores(
+    #     self,
+    #     prev_scores: Dict[str, float],
+    #     next_full_scores: Dict[str, torch.Tensor],
+    #     # next_part_scores: Optional[Dict[str, torch.Tensor]] = None
+    # ) -> torch.Tensor:
+    #     """Merge scores of current step into running scores."""
+    #     new_scores = dict()
+    #     for k, v in next_full_scores.items():
+    #         new_scores[k] = prev_scores[k] + v
+    #     # for k, v in next_part_scores.items():
+    #     #     new_scores[k] = prev_scores[k] + v
+    #     return new_scores
+
+    # def _path_select(
+    #     self, running_hyps: BatchBeamHypothesis, index: torch.Tensor
+    # ) -> BatchBeamHypothesis:
+    #     """Select hypothese path indicated by 1-D tensor index."""
+    #     assert len(index.size()) == 1, "index should be 1-D tensor."
+    #     assert index.size().item() == len(running_hyps), "number of path not match."
+    #     # 1. flatten batch, beam by path
+    #     bsz, beam, T, D = running_hyps.x.size()
+    #     running_hyps = running_hyps._path_view()
+    #     # 2. select by path index
+    #     _new_ids = running_hyps.ids.index_select(0, index)  # (bsz*beam)
+    #     _new_x = running_hyps.x.index_select(0, index)
+    #     _new_yseq = running_hyps.yseq.index_select(0, index)
+    #     _new_score = running_hyps.score.index_select(0, index)
+    #     _new_length = running_hyps.length.index_select(0, index)
+    #     _new_scores = {
+    #         k: v.view(-1).index_select(0, index).view(bsz, beam)
+    #         for k, v in running_hyps.scores.items()
+    #     }
+    #     _new_states = {
+    #         k: [path_state for path_state in v]
+    #         for k, v in running_hyps.states.items()
+    #     }
+    #     running_hyps = BatchBeamHypothesis(
+    #         ids=_new_ids,
+    #         x=_new_x,
+    #         yseq=_new_yseq,
+    #         score=_new_score,
+    #         length=_new_length,
+    #         scores=_new_scores,
+    #         states=_new_states
+    #     )
+    #     # 3. reshape to (batch, beam) view
+    #     _new_ids = running_hyps.ids.index_select(0, index)  # (bsz*beam)
+    #     bsz, beam, T, D = running_hyps.x.size()
+    #     # (batch, beam, T, D)  -> (batch*beam, T, D) -> (batch, beam, T, D)
+    #     _new_x = running_hyps.x.view(-1, T, D).index_select(0, index).view(bsz, -1, T, D)
+    #     # yseq: (batch, beam, seq_len) -> (batch*beam, seq_len) -> (batch, beam, seq_len)
+    #     bsz_y, beam_y, seq_len = running_hyps.yseq.size()
+    #     assert bsz == bsz_y and beam == bsz_y, "Error: size mismatch!"
+    #     _new_yseq = running_hyps.yseq.view(-1, seq_len).index_select(0, index).view(-1, beam, seq_len)
+    #     # score, length: (batch, beam) -> (batch*beam) -> (batch, beam)
+    #     _new_score = running_hyps.score.view(-1).index_select(0, index).view(-1, beam)
+    #     _new_length = running_hyps.length.view(-1).index_select(0, index).view(-1, beam)
+    #     # scores: Dict[str, Tensor(batch, beam) -> (batch*beam) -> (batch, beam)]
+    #     _new_scores = {
+    #         k: v.view(-1).index_select(0, index).view(bsz, beam)
+    #         for k, v in running_hyps.scores.items()
+    #     }
+    #     # states: Dict[str, List[List](batch, beam) -> (batch, beam)]
+    #     _new_states = {
+    #         k: [[v[path_id // beam][path_id % beam] for path_id in batch_ids]
+    #             for batch_ids in index]
+    #         for k, v in running_hyps.states.items()
+    #     }
+    #     return BatchBeamHypothesis(
+    #         ids=_new_ids,
+    #         x=_new_x,
+    #         yseq=_new_yseq,
+    #         score=_new_score,
+    #         length=_new_length,
+    #         scores=_new_scores,
+    #         states=_new_states
+    #     )
 
     def search(
         self, running_hyps: BatchBeamHypothesis, x: torch.Tensor
@@ -384,7 +542,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
             BatchHypothesis: Best sorted hypotheses (B*beam_size, Ty+1)
 
         """
-        batch_size = running_hyps.x.size(0)
+        batch_size, beam, T, D = running_hyps.x.size()
         n_path = len(running_hyps)
         # part_ids = None  # no pre-beam
 
@@ -398,34 +556,35 @@ class RealBatchBeamSearch(BatchBeamSearch):
         for k in self.full_scorers:
             weighted_scores += self.weights[k] * scores[k]
         # partial scoring:
-        if self.do_pre_beam:
-            pre_beam_scores = (
-                weighted_scores
-                if self.pre_beam_score_key == "full"
-                else scores[self.pre_beam_score_key]
-            )
-            # NOTE: reshape to (batch_size, -1) -> topk as batch_beam
-            part_batch_beam_ids, part_new_token_ids = self.pre_batch_beam(
-                pre_beam_scores.view(batch_size, self.beam_size, self.n_vocab))
-            # batch_beam_id -> path_id
-            part_batch_beam_offset = torch.arange(
-                0, batch_size * self.beam_size, step=self.beam_size
-            ).to(part_batch_beam_ids)  # (batch)
-            # (batch, pre_beam_size) + (batch, 1)
-            part_hyp_ids = part_batch_beam_ids + part_batch_beam_offset.unsqueeze(1)
-            # DELETE THESE
-            # part_ids: (B, pre_beam_size)
-            # part_ids = torch.topk(pre_beam_scores, self.pre_beam_size, dim=-1)[1]
-            # NOTE: part_ids.view(batch_size, -1, self.pre_beam_size)
-        else:
-            part_hyp_ids, part_new_token_ids = None, None
-        # NOTE(takaaki-hori): Unlike BeamSearch, we assume that score_partial returns
-        # full-size score matrices, which has non-zero scores for part_ids and zeros
-        # for others.
-        part_scores, part_states = self.score_partial(
-            running_hyps, part_hyp_ids, part_new_token_ids, x)  # FIXME
-        for k in self.part_scorers:
-            weighted_scores += self.weights[k] * part_scores[k]
+        # assert not self.do_pre_beam, "PartialScorer is not supported yet."
+        # if self.do_pre_beam:
+        #     pre_beam_scores = (
+        #         weighted_scores
+        #         if self.pre_beam_score_key == "full"
+        #         else scores[self.pre_beam_score_key]
+        #     )
+        #     # NOTE: reshape to (batch_size, -1) -> topk as batch_beam
+        #     part_batch_beam_ids, part_new_token_ids = self.pre_batch_beam(
+        #         pre_beam_scores.view(batch_size, self.beam_size, self.n_vocab))
+        #     # batch_beam_id -> path_id
+        #     part_batch_beam_offset = torch.arange(
+        #         0, batch_size * self.beam_size, step=self.beam_size
+        #     ).to(part_batch_beam_ids)  # (batch)
+        #     # (batch, pre_beam_size) + (batch, 1)
+        #     part_hyp_ids = part_batch_beam_ids + part_batch_beam_offset.unsqueeze(1)
+        #     # DELETE THESE
+        #     # part_ids: (B, pre_beam_size)
+        #     # part_ids = torch.topk(pre_beam_scores, self.pre_beam_size, dim=-1)[1]
+        #     # NOTE: part_ids.view(batch_size, -1, self.pre_beam_size)
+        # else:
+        #     part_hyp_ids, part_new_token_ids = None, None
+        # # NOTE(takaaki-hori): Unlike BeamSearch, we assume that score_partial returns
+        # # full-size score matrices, which has non-zero scores for part_ids and zeros
+        # # for others.
+        # part_scores, part_states = self.score_partial(
+        #     running_hyps, part_hyp_ids, part_new_token_ids, x)  # FIXME
+        # for k in self.part_scorers:
+        #     weighted_scores += self.weights[k] * part_scores[k]
 
         # add previous hyp scores
         weighted_scores += running_hyps.score.view(-1).unsqueeze(1)
@@ -469,63 +628,76 @@ class RealBatchBeamSearch(BatchBeamSearch):
         #         )
         #     )
 
-        # Replacement: batch implementation
-        # NOTE 2. Rank Score at batch level: each sentence got beam candidate
-        # (batch, beam), (batch, beam), (batch, beam)
+        # NOTE 2. Rank Score at batch level: each sentence got self.beam_size candidate
+        # (batch, self.beam_size), (batch, self.beam_size), (batch, self.beam_size)
         top_scores, batch_beam_ids, token_ids = self.batch_beam(
             weighted_scores.view(batch_size, -1, self.n_vocab),
             part_ids=None  # not use in definition
         )
         batch_beam_offset = torch.arange(
-            0, batch_size * self.beam_size, step=self.beam_size).to(batch_beam_ids)  # (batch)
+            0, batch_size * beam, step=beam).to(batch_beam_ids)  # (batch)
         hyp_ids = batch_beam_ids + batch_beam_offset.unsqueeze(1)  # (batch, beam) + (batch, 1)
         # partial reuse full as in batch_beam_search.py: see its batch_beam method
-        part_hyp_ids, part_token_ids = hyp_ids, token_ids
+        # part_hyp_ids, part_token_ids = hyp_ids, token_ids
+
+        # Replacement: batch implementation
+        # Loop to merge score & states using merge_scores/merge_states
+        _hyps_scores, _hyps_states = [], []  # List[Dict]
+        for hyp_id, new_token_id in zip(hyp_ids.view(-1), token_ids.view(-1)):
+            hyp_scores = self.merge_scores(
+                {k: v[hyp_id] for k, v in running_hyps.scores.items()},  # (batch*beam,) -> (1)
+                {k: v[hyp_id] for k, v in scores.items()},  # (batch*beam, V) -> (V)
+                new_token_id,
+                {},
+                new_token_id,
+            )
+            hyp_states = self.merge_states(
+                {
+                    k: self.full_scorers[k].select_state(v, hyp_id)
+                    for k, v in states.items()
+                },  # (batch*beam)
+                {},
+                new_token_id,
+            )
+            _hyps_scores.append(hyp_scores)
+            _hyps_states.append(hyp_states)
+        batch_scores = {k: torch.tensor([_scores[k] for _scores in _hyps_scores]) for k in self.scorers}
+        batch_states = {k: [_states[k] for _states in _hyps_states] for k in self.scorers}
 
         # NOTE 3. update running_hyps
-        # merge states
-        # reshape states from (batch*beam) -> (batch, beam, *)
-        # running_hyps.states = self.merge_states(
-        #     {
-        #         k: [v[batch_id * self.beam_size : (batch_id + 1) * self.beam_size]
-        #             for batch_id in range(batch_size)]
-        #         for k, v in states.items()
-        #     },
-        #     {
-        #         k: [v[batch_id * self.beam_size : (batch_id + 1) * self.beam_size]
-        #             for batch_id in range(batch_size)]
-        #         for k, v in part_states.items()
-        #     },
-        #     part_idx=None  # not use in definition
-        # )
-        # NOTE running_hyps.scores/states further updated by reorder
-        # reorder by hyp_ids: choose beam selected path
-        reordered_hyps = running_hyps.index_reorder(hyp_ids.view(-1))
-        # append last prediction: (batch, beam, seq_len) + (batch, beam, 1)
-        reordered_hyps.yseq = torch.cat(
-            (reordered_hyps.yseq, token_ids.unsqueeze(-1)), dim=-1)
-        reordered_hyps.length += 1
-        # update score as chosen by beam
-        reordered_hyps.score = top_scores
-        # update scores: reorder by select hyp path -> TODO select by token_id -> merge
-        _reordered_token_scores = {
-            k: v.index_select(0, hyp_ids.view(-1)).view(
-                batch_size, self.beam_size, self.n_vocab)
-            for k, v in scores.items()
-        }  # TODO FIXME select by token_id -> (batch, beam)
-        _reordered_part_scores = {
-            k: v.index_select(0, part_hyp_ids.view(-1)).view(
-                batch_size, self.beam_size, self.n_vocab)
-            for k, v in part_scores.items()
-        }  # TODO FIXME select by part_token_id -> (batch, beam)
-        running_hyps.scores = self.merge_batch_scores(
-            prev_scores=running_hyps.scores,
-            next_full_scores=_reordered_token_scores,  # FIXME
-            next_part_scores=_reordered_part_scores  # FIXME
+        # # reorder by hyp_ids: choose beam selected path
+        # reordered_hyps = running_hyps.index_reorder(hyp_ids.view(-1))
+        # # append last prediction: (batch, beam, seq_len) + (batch, beam, 1)
+        # reordered_hyps.yseq = torch.cat(
+        #     (reordered_hyps.yseq, token_ids.unsqueeze(-1)), dim=-1)
+        # reordered_hyps.length += 1
+        # # # update score as chosen by beam
+        # reordered_hyps.score = top_scores
+        # reordered_hyps.scores = batch_scores
+        # reordered_hyps.states = batch_states
+        # return reordered_hyps
+
+        # get batch hypothesis info by hyp_ids
+        batch_ids = running_hyps.ids.index_select(0, hyp_ids.view(-1))   # (bsz*beam)
+        batch_x = running_hyps.x.view(batch_size * beam, T, D).index_select(0, hyp_ids.view(-1))
+        batch_yseq = running_hyps.yseq.view(batch_size * beam, -1).index_select(0, hyp_ids.view(-1))
+        batch_length = running_hyps.length.view(batch_size * beam).index_select(0, hyp_ids.view(-1))
+        new_bsz, new_beam = hyp_ids.size()
+        assert new_bsz == batch_size, "batch size should match!"
+        assert new_beam == self.beam_size, "each batch should have beam_size path after search."
+        # update prediction
+        new_yseq = torch.cat(
+            (batch_yseq.view(new_bsz, new_beam, -1), token_ids.unsqueeze(-1)), dim=-1)
+        new_length = batch_length.view(new_bsz, new_beam) + 1
+        return BatchBeamHypothesis(
+            ids=batch_ids,
+            x=batch_x.view(new_bsz, new_beam, T, D),
+            yseq=new_yseq,
+            score=top_scores,
+            length=new_length,
+            scores=batch_scores,
+            states=batch_states
         )
-        # TODO: select states: need to use scorer.select_state may need to fall back to for-loop
-        # FIXME select states may not easy to do in batch
-        return reordered_hyps
 
     def forward(
         self, x: torch.Tensor, maxlenratio: float = 0.0, minlenratio: float = 0.0
@@ -584,10 +756,10 @@ class RealBatchBeamSearch(BatchBeamSearch):
         best_finalized = [
             sorted(hyps, key=lambda x: x.score, reverse=True) for hyps in finalized
         ]
-        assert all([len(hyps) >= self.beam_size for hyps in best_finalized]), \
+        assert all((len(hyps) >= self.beam_size for hyps in best_finalized)), \
             "Not enough hypothesis generated."
         # prune to contain only {beam_size} hypothesis for each sentence
-        if any([len(hyps) > self.beam_size for hyps in best_finalized]):
+        if any((len(hyps) > self.beam_size for hyps in best_finalized)):
             best_finalized = [hyps[:self.beam_size] for hyps in best_finalized]
         return best_finalized
 
@@ -650,7 +822,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
             finished_batch_id = set()  # [0, batch_size)
             for path_id, sent_id in zip(
                     path_newly_finished_id.tolist(), path_sent_id.tolist()):
-                finished_hyp = running_hyps.get_hypothesis_at(path_id)
+                finished_hyp = self._select(running_hyps, path_id)
                 # TODO finalize hyp with partial's score?
                 ended_hyps[sent_id].append(finished_hyp)
                 # sentence finish when it has beam_size finished hypothesis
@@ -668,7 +840,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
                 if len(batch_id_alive) == 0:
                     logging.debug(f"All batch finished.")
                     return BatchBeamHypothesis()
-                running_hyps = running_hyps.get_alive_batch(batch_id_alive)
+                running_hyps = self._batch_select(running_hyps, batch_id_alive)  #.get_alive_batch(batch_id_alive)
                 new_bsz = running_hyps.length.size(0)
                 logging.debug(f"Update finished batch: {batch_size}->{new_bsz}.")
             if running_hyps.score.eq(-math.inf).all(dim=-1).any():

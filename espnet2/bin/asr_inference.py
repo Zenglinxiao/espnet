@@ -134,6 +134,8 @@ class Speech2Text:
                     f"Potential issue: non-batch scorers {non_batch} are found")
             beam_search.__class__ = RealBatchBeamSearch
             logging.info("RealBatchBeamSearch implementation is selected.")
+            assert not beam_search.do_pre_beam, \
+                "RealBatchBeamSearch with PartialScorer is not supported yet."
         beam_search.to(device=device, dtype=getattr(torch, dtype)).eval()
         for scorer in scorers.values():
             if isinstance(scorer, torch.nn.Module):
@@ -279,8 +281,8 @@ def inference(
     allow_variable_data_keys: bool,
 ):
     assert check_argument_types()
-    if batch_size > 1:
-        raise NotImplementedError("batch decoding is not implemented")
+    # if batch_size > 1:
+    #     raise NotImplementedError("batch decoding is not implemented")
     if word_lm_train_config is not None:
         raise NotImplementedError("Word LM is not implemented")
     if ngpu > 1:
@@ -335,7 +337,7 @@ def inference(
     # 7 .Start for-loop
     # FIXME(kamo): The output format should be discussed about
     with DatadirWriter(output_dir) as writer:
-        for keys, batch in loader:  # key: uid (list: B), batch : {'speech': (B,S,D), 'speech_length': (X, S)}
+        for keys, batch in loader:  # key: uid (list: B), batch : {'speech': (B,S,D), 'speech_length': (B)}
             assert isinstance(batch, dict), type(batch)
             assert all(isinstance(s, str) for s in keys), keys
             _bs = len(next(iter(batch.values())))
