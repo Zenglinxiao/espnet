@@ -232,7 +232,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
         path_hyps = hyps._path_view()
         return Hypothesis(
             yseq=path_hyps.yseq[path_id, : path_hyps.length[path_id]],
-            score=path_hyps.score[path_id],
+            score=path_hyps.score[path_id].detach().clone(),  # copy to avoid overwrite
             scores={k: v[path_id] for k, v in path_hyps.scores.items()},
             states={
                 k: self.scorers[k].select_state(v, path_id)
