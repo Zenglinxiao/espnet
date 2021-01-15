@@ -736,7 +736,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
             # post process of one iteration: remove ended hypothsis, get remain running hyps
             # update ended_hyps, maintain running hyps, etc...
             running_hyps = self.post_process(
-                i, maxlen, maxlenratio, best, finalized, finished)
+                i, minlen, maxlen, maxlenratio, best, finalized, finished)
             # end detection
             if all(finished):
                 assert len(running_hyps) == 0, "all finish but running_hyps not empty."
@@ -763,7 +763,7 @@ class RealBatchBeamSearch(BatchBeamSearch):
             best_finalized = [hyps[:self.beam_size] for hyps in best_finalized]
         return best_finalized
 
-    def post_process(self, i, maxlen, maxlenratio, running_hyps, ended_hyps, finished):
+    def post_process(self, i, minlen, maxlen, maxlenratio, running_hyps, ended_hyps, finished):
         """Perform post-processing of beam search iterations.
 
         Args:
@@ -824,7 +824,8 @@ class RealBatchBeamSearch(BatchBeamSearch):
                     path_newly_finished_id.tolist(), path_sent_id.tolist()):
                 finished_hyp = self._select(running_hyps, path_id)
                 # TODO finalize hyp with partial's score?
-                ended_hyps[sent_id].append(finished_hyp)
+                if len(finished_hyp.yseq) - 2 > minlen:  # TODO: improve this
+                    ended_hyps[sent_id].append(finished_hyp)
                 # sentence finish when it has beam_size finished hypothesis
                 if len(ended_hyps[sent_id]) >= self.beam_size:
                     finished_batch_id.add(path_id // self.beam_size)
